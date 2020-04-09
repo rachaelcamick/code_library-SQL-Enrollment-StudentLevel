@@ -1,0 +1,82 @@
+with 
+
+dist_bld as ( -- this table extracts every rew event that occurred in district buildings during the desired school years
+select	distinct rew.school_year
+		,rew.student_id
+		,rew.grade
+		,rb.state_code_equiv as bld_irn
+		,rew.entry_date
+		,rew.withdrawal_date
+from REG_ENTRY_WITH rew
+left join REG_BUILDING rb on rew.BUILDING = rb.BUILDING
+where rb.BUILDING_TYPE in ('E', 'H', 'HB', 'HOLD', 'IN')
+and (rew.SCHOOL_YEAR >= 2015 and rew.SCHOOL_YEAR <= 2019)),
+
+min_max as ( -- this table finds the min entry date and max withdrawal date for each student that is included in the dis_bld table 
+select distinct school_year
+		,student_id
+		,min(entry_date) as min_entry
+		,max(withdrawal_date) as max_with
+from dist_bld 
+group by school_year, student_id),
+
+min_max_filter as ( -- this table includes only students in the respective school year who have have an entry on or before the entry cutoff and on or after the withdrawal cutoff 
+select	distinct school_year
+		,student_id
+from min_max
+where (school_year = 2015 and min_entry <= '2014-10-01' and max_with >= '2015-04-30') OR
+(school_year = 2016 and min_entry <= '2015-10-01' and max_with >= '2016-04-30') OR
+(school_year = 2017 and min_entry <= '2016-10-01' and max_with >= '2017-04-30') OR
+(school_year = 2018 and min_entry <= '2017-10-01' and max_with >= '2018-04-30') OR
+(school_year = 2019 and min_entry <= '2018-10-01' and max_with >= '2019-04-30')),
+
+dist_bld_filtered as ( --this table finds the difference, in days, between the withdrawal date and entry date of students included in min_max_filter table
+select	distinct mmf.school_year
+		,mmf.student_id
+		,db.grade
+		,db.bld_irn
+		,db.entry_date
+		,db.withdrawal_date
+		,datename(weekday, db.withdrawal_date) as withdrawal_weekday
+		,isnull(datediff(day, db.withdrawal_date, lead(db.entry_date, 1) OVER (PARTITION BY mmf.school_year, mmf.student_id ORDER BY db.entry_date)), 0) as days_diff 
+from min_max_filter mmf 
+left join dist_bld db on mmf.SCHOOL_YEAR = db.SCHOOL_YEAR and mmf.STUDENT_ID = db.STUDENT_ID),
+
+dist_bld_filtered_weekend as ( --this is the same as the above table, except it controls for friday withdrawals/monday entries,, which show up as a 3 day date diff 
+select distinct school_year
+		,student_id
+		,grade
+		,bld_irn
+		,entry_date
+		,withdrawal_date
+		,withdrawal_weekday
+		,days_diff
+		,CASE 
+			WHEN withdrawal_weekday = 'Friday' AND days_diff = 3
+			THEN 1
+			ELSE days_diff
+		END as days_diff2
+from dist_bld_filtered),
+
+max_days_diff as (
+select	distinct school_year
+		,student_id
+		,max(days_diff2) as max_days_diff
+from dist_bld_filtered_weekend dbf
+group by school_year, student_id),
+
+max_days_diff_01 as (
+select	distinct school_year
+		,student_id
+from max_days_diff mdd 
+where max_days_diff <= 1)
+
+select	distinct mdd01.school_year
+		,mdd01.student_id
+		,db.grade
+		,db.bld_irn
+		,db.entry_date
+		,db.withdrawal_date
+from max_days_diff_01 mdd01
+left join dist_bld db on mdd01.school_year = db.school_year and mdd01.student_id = db.student_id
+order by mdd01.school_year, mdd01.student_id, db.entry_date
